@@ -94,19 +94,19 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </div>
 
-      {/* Main Navigation Bar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-15 flex items-center justify-between">
+      {/* Brand + utility actions */}
+      <div className="w-full px-4 lg:px-6 py-2.5 flex items-center justify-between gap-4">
         {/* Brand */}
         <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={() => setActiveTab('dashboard')}>
-          <div className="w-8 h-8 rounded bg-slate-900 flex items-center justify-center text-white">
+          <div className="w-9 h-9 rounded bg-slate-900 flex items-center justify-center text-white">
             <Shield className="w-4 h-4 text-slate-100" />
           </div>
-          <div>
+          <div className="whitespace-nowrap">
             <div className="flex items-center gap-1.5">
               <span className="text-base font-bold tracking-tight text-slate-900">
                 RiskPilot
               </span>
-              <span className="text-[10px] font-mono uppercase px-1.5 py-0.2 bg-slate-100 text-slate-700 border border-slate-200 rounded font-semibold">
+              <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded font-semibold">
                 AI
               </span>
             </div>
@@ -114,93 +114,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Primary Navigation Tabs */}
-        <nav className="hidden md:flex items-center gap-6 h-full text-sm font-medium">
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'dashboard'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <LayoutDashboard className="w-4 h-4 text-slate-400" />
-            Dashboard
-            {criticalAlertsCount > 0 && (
-              <span className="px-1.5 py-0.2 bg-red-100 text-red-800 rounded text-[11px] font-mono font-semibold">
-                {criticalAlertsCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('investigation')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'investigation'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Building2 className="w-4 h-4 text-slate-400" />
-            Supplier Deep Dive
-          </button>
-
-          <button
-            onClick={() => setActiveTab('ai-assistant')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'ai-assistant'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Brain className="w-4 h-4 text-slate-400" />
-            AI Assistant
-          </button>
-
-          <button
-            onClick={() => setActiveTab('simulator')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'simulator'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <SlidersHorizontal className="w-4 h-4 text-slate-400" />
-            Decision Simulator
-          </button>
-
-          <button
-            onClick={() => setActiveTab('actions')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'actions'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <ClipboardList className="w-4 h-4 text-slate-400" />
-            Action Center
-            {draftActionsCount > 0 && (
-              <span className="px-1.5 py-0.2 bg-slate-100 text-slate-800 border border-slate-200 rounded text-[11px] font-mono">
-                {draftActionsCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('audit')}
-            className={`h-full flex items-center gap-2 border-b-2 px-1 transition-colors cursor-pointer ${
-              activeTab === 'audit'
-                ? 'border-slate-900 text-slate-900 font-semibold'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <History className="w-4 h-4 text-slate-400" />
-            Audit Trail
-          </button>
-        </nav>
-
         {/* Right Actions: Tour, Reset & User Profile */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Landing Page Tour Toggle */}
           <button
             onClick={onOpenLanding}
@@ -363,57 +278,90 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </div>
 
-      {/* Mobile Nav Row */}
-      <div className="md:hidden flex overflow-x-auto border-t border-slate-200 px-3 py-1.5 gap-2 text-xs bg-slate-50">
+      {/* Primary Navigation — full-width row so labels stay on one line */}
+      <nav className="flex items-stretch gap-1 overflow-x-auto border-t border-slate-200 px-4 lg:px-6 h-12 text-sm font-medium">
         <button
           onClick={() => setActiveTab('dashboard')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'dashboard' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'dashboard'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
+          <LayoutDashboard className="w-4 h-4 text-slate-400 shrink-0" />
           Dashboard
+          {criticalAlertsCount > 0 && (
+            <span className="px-1.5 py-0.5 bg-red-100 text-red-800 rounded text-[11px] font-mono font-semibold">
+              {criticalAlertsCount}
+            </span>
+          )}
         </button>
+
         <button
           onClick={() => setActiveTab('investigation')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'investigation' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'investigation'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
-          Investigation
+          <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
+          Supplier Deep Dive
         </button>
+
         <button
           onClick={() => setActiveTab('ai-assistant')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'ai-assistant' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'ai-assistant'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
+          <Brain className="w-4 h-4 text-slate-400 shrink-0" />
           AI Assistant
         </button>
+
         <button
           onClick={() => setActiveTab('simulator')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'simulator' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'simulator'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
-          Simulator
+          <SlidersHorizontal className="w-4 h-4 text-slate-400 shrink-0" />
+          Decision Simulator
         </button>
+
         <button
           onClick={() => setActiveTab('actions')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'actions' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'actions'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
-          Actions ({draftActionsCount})
+          <ClipboardList className="w-4 h-4 text-slate-400 shrink-0" />
+          Action Center
+          {draftActionsCount > 0 && (
+            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-800 border border-slate-200 rounded text-[11px] font-mono">
+              {draftActionsCount}
+            </span>
+          )}
         </button>
+
         <button
           onClick={() => setActiveTab('audit')}
-          className={`px-2.5 py-1 rounded whitespace-nowrap cursor-pointer ${
-            activeTab === 'audit' ? 'bg-slate-900 text-white font-medium' : 'text-slate-600'
+          className={`shrink-0 flex flex-row items-center gap-2 border-b-2 px-4 whitespace-nowrap transition-colors cursor-pointer ${
+            activeTab === 'audit'
+              ? 'border-slate-900 text-slate-900 font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
-          Audit
+          <History className="w-4 h-4 text-slate-400 shrink-0" />
+          Audit Trail
         </button>
-      </div>
+      </nav>
     </header>
   );
 };

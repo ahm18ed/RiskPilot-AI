@@ -42,7 +42,7 @@ function getInitialPage(): AppPage {
 }
 
 function RiskPilotApp() {
-  const { user, isAuthenticated, loginAsPersona } = useAuth();
+  const { user, isAuthenticated, isLoading, loginAsPersona } = useAuth();
 
   // Page routing: 'landing' | 'login' | 'signup' | 'workspace'
   const [currentPage, setCurrentPage] = useState<AppPage>(getInitialPage);
@@ -75,8 +75,17 @@ function RiskPilotApp() {
     }, 4500);
   };
 
-  // URL history routing navigation helper
+  // URL history routing navigation helper with Authentication Guard
   const navigateTo = (page: AppPage) => {
+    if (page === 'workspace' && !isAuthenticated) {
+      showToast('Authentication Required: Please sign in or select an Enterprise Persona to access the workspace.', 'error');
+      setCurrentPage('login');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.history.pushState({ page: 'login' }, '', '/login');
+      }
+      return;
+    }
+
     setCurrentPage(page);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -91,14 +100,30 @@ function RiskPilotApp() {
     }
   };
 
+  // Protected route guard: Redirect unauthenticated workspace visits to login page
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated && currentPage === 'workspace') {
+      showToast('Authentication Required: Please sign in or select an Enterprise Persona to access the workspace.', 'error');
+      setCurrentPage('login');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.history.pushState({ page: 'login' }, '', '/login');
+      }
+    }
+  }, [isLoading, isAuthenticated, currentPage]);
+
   // Browser back/forward navigation support
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPage(getInitialPage());
+      const page = getInitialPage();
+      if (page === 'workspace' && !isAuthenticated) {
+        setCurrentPage('login');
+      } else {
+        setCurrentPage(page);
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [isAuthenticated]);
 
   // Load Dashboard Data
   const loadDashboard = async (filters?: { severity?: Severity | 'ALL'; status?: SupplierStatus | 'ALL'; search?: string }) => {
@@ -255,6 +280,16 @@ function RiskPilotApp() {
   const draftActionsCount = actions.filter(a => a.status === 'DRAFT').length;
   const criticalAlertsCount = dashboardData?.urgentAlerts.filter(a => a.severity === 'CRITICAL').length || 0;
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white font-sans p-4">
+        <div className="w-10 h-10 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm font-semibold tracking-wide">Verifying Enterprise RiskPilot Session...</p>
+        <p className="text-xs text-slate-400 font-mono mt-1">SOX 404 & AS9100 Identity Handshake</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-slate-900 selection:text-white">
       {/* Toast Notification */}
@@ -318,8 +353,8 @@ function RiskPilotApp() {
         />
       )}
 
-      {/* Dedicated Page 4: Interactive Risk Intelligence Workspace */}
-      {currentPage === 'workspace' && (
+      {/* Dedicated Page 4: Protected Interactive Risk Intelligence Workspace */}
+      {currentPage === 'workspace' && isAuthenticated && (
         <>
           {/* Main Navbar */}
           <Navbar

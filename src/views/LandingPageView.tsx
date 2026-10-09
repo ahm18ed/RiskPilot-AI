@@ -39,7 +39,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   onNavigateToSignup,
   onOpenAuthModal
 }) => {
-  const { user, isAuthenticated, loginAsPersona, logout } = useAuth();
+  const { user, isAuthenticated } = useAuth();
 
   // ROI Calculator interactive state
   const [annualSpend, setAnnualSpend] = useState<number>(120); // in Millions USD
@@ -78,38 +78,6 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans selection:bg-slate-700 selection:text-white">
-      {/* Top Banner */}
-      <div className="bg-slate-950 border-b border-slate-800 px-4 py-2 text-xs text-slate-300 flex items-center justify-between">
-        <div className="max-w-7xl mx-auto w-full flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 bg-slate-800 text-slate-200 border border-slate-700 rounded text-[10px] font-mono font-semibold">
-              MISSION CRITICAL
-            </span>
-            <span className="text-slate-300">
-              Autonomous Supplier Risk Intelligence & Predictive Sourcing Governance · AS9100 / SOX 404 Compliant
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-slate-400 font-mono text-[11px] hidden sm:inline">
-              Canonical Demo Scenario: Apex Precision (SUP-001) Active
-            </span>
-            <button
-              onClick={onNavigateToLogin}
-              className="text-xs font-medium text-slate-200 hover:text-white underline cursor-pointer"
-            >
-              Sign In to Platform
-            </button>
-            <span className="text-slate-600 hidden sm:inline">·</span>
-            <button
-              onClick={onNavigateToSignup}
-              className="text-xs font-medium text-emerald-400 hover:text-emerald-300 underline cursor-pointer hidden sm:inline"
-            >
-              Create Account
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* Main Landing Navigation */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -221,21 +189,21 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 if (isAuthenticated) {
                   onEnterWorkspace();
                 } else {
-                  loginAsPersona('usr-elena').then(onEnterWorkspace);
+                  onNavigateToLogin();
                 }
               }}
               className="px-6 py-3.5 bg-white text-slate-950 hover:bg-slate-100 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-white/5 transition-all cursor-pointer transform hover:-translate-y-0.5"
             >
-              <span>Launch Live Workspace (as CPO)</span>
+              <span>{isAuthenticated ? 'Launch Workspace' : 'Sign In to Access Workspace'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
 
             <button
-              onClick={() => onOpenAuthModal ? onOpenAuthModal('persona') : onNavigateToLogin()}
+              onClick={() => onNavigateToLogin()}
               className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 hover:border-slate-600 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all cursor-pointer"
             >
               <UserCheck className="w-4 h-4 text-slate-300" />
-              <span>Select Enterprise Persona</span>
+              <span>Sign In / Select Role</span>
             </button>
 
             <a
@@ -412,11 +380,15 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               <div className="mt-4 pt-3 border-t border-slate-800/80">
                 <button
                   onClick={() => {
-                    loginAsPersona('usr-elena').then(onEnterWorkspace);
+                    if (isAuthenticated) {
+                      onEnterWorkspace();
+                    } else {
+                      onNavigateToLogin();
+                    }
                   }}
                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                 >
-                  <span>Resolve SUP-001 in Workspace</span>
+                  <span>{isAuthenticated ? 'Resolve SUP-001 in Workspace' : 'Sign In to Access Workspace'}</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -799,7 +771,15 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                   <strong className="text-white font-mono">{paybackMonths} months</strong>
                 </div>
                 <button
-                  onClick={() => onOpenAuthModal ? onOpenAuthModal('persona') : onEnterWorkspace()}
+                  onClick={() => {
+                    if (isAuthenticated) {
+                      onEnterWorkspace();
+                    } else if (onOpenAuthModal) {
+                      onOpenAuthModal('persona');
+                    } else {
+                      onNavigateToLogin();
+                    }
+                  }}
                   className="px-3.5 py-1.5 bg-white text-slate-950 font-semibold rounded text-xs hover:bg-slate-100 transition-colors cursor-pointer"
                 >
                   Verify in Demo
@@ -850,12 +830,10 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
                   <div className="mt-6 pt-4 border-t border-slate-800">
                     <button
-                      onClick={() => {
-                        loginAsPersona(persona.id).then(onEnterWorkspace);
-                      }}
+                      onClick={() => onNavigateToLogin()}
                       className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer group"
                     >
-                      <span>Log In as {persona.name.split(' ')[0]}</span>
+                      <span>Sign In as {persona.name.split(' ')[0]}</span>
                       <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                     </button>
                   </div>
@@ -922,12 +900,12 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 if (isAuthenticated) {
                   onEnterWorkspace();
                 } else {
-                  loginAsPersona('usr-elena').then(onEnterWorkspace);
+                  onNavigateToLogin();
                 }
               }}
               className="px-6 py-3.5 bg-white text-slate-950 hover:bg-slate-100 rounded-xl text-sm font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg"
             >
-              <span>Launch Live Workspace (as CPO)</span>
+              <span>{isAuthenticated ? 'Launch Live Workspace' : 'Sign In to Launch Workspace'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
 

@@ -245,6 +245,13 @@ console.log('\n[Suite 10] AI Fallback & Structured Reasoning');
   assert(fallbackResult.workflowStage === 'Evaluate', 'Recognizes workflow stage as Evaluate');
   assert(fallbackResult.answerMarkdown.includes('25 days of stock cover'), 'Includes actual calculated 25 days stock cover in answer');
   assert(fallbackResult.optionsCompared.length >= 2, 'Compares at least 2 structured options in fallback mode');
+
+  const identityResponse = generateDeterministicAIAnalysis('What is your name?', apex, titanItem);
+  assert(identityResponse.answerMarkdown.includes("I'm RiskPilot AI"), 'Answers assistant identity questions directly in fallback mode');
+  assert(identityResponse.optionsCompared.length === 0, 'Does not attach unrelated procurement simulations to conversational answers');
+
+  const unsupportedResponse = generateDeterministicAIAnalysis('What is 2 + 2?', apex, titanItem);
+  assert(unsupportedResponse.answerMarkdown.includes('local fallback is limited'), 'Clearly limits unsupported general questions instead of inventing a supplier investigation');
 }
 
 // 11. Extended Agent Operations
@@ -344,6 +351,23 @@ console.log('\n[Suite 11] Extended Autonomous Agent Operations');
   assert(directRes.directExecutionResult !== undefined, 'Returns direct execution result object');
   assert(directRes.directExecutionResult?.success === true, 'Direct action successfully executed');
   assert(directRes.directExecutionResult?.actionId?.startsWith('ACT-AUTO-') === true, 'Live action ID assigned and recorded in database');
+}
+
+// 12. Authentication & Session Audit Verification
+console.log('\n[Suite 12] Authentication & Session Audit Verification');
+{
+  const initialAuditCount = dataStore.getAuditTrail().length;
+  dataStore.recordAudit({
+    actor: 'Elena Vance (VP Global Supply Chain & CPO)',
+    eventType: 'USER_AUTHENTICATED',
+    details: 'Authenticated via Enterprise Persona. Session initiated for AeroDynamics Global Corp.'
+  });
+
+  const updatedAudit = dataStore.getAuditTrail();
+  assert(updatedAudit.length === initialAuditCount + 1, 'Audit log recorded authentication event');
+  const latestLog = updatedAudit[0];
+  assert(latestLog.eventType === 'USER_AUTHENTICATED', 'Audit log event type is USER_AUTHENTICATED');
+  assert(latestLog.actor.includes('Elena Vance'), 'Audit log records correct actor identity');
 }
 
 console.log(`\n======================================================`);

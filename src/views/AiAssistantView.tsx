@@ -38,6 +38,7 @@ interface ChatTurn {
   workflowStage?: string;
   confidenceScore?: number;
   isFallback?: boolean;
+  fallbackReason?: string;
   compoundingFactors?: string[];
   evidencePoints?: string[];
   optionsCompared?: {
@@ -150,6 +151,7 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
         workflowStage: res.workflowStage,
         confidenceScore: res.confidenceScore,
         isFallback: res.isDeterministicFallback,
+        fallbackReason: res.fallbackReason,
         compoundingFactors: res.compoundingFactors,
         evidencePoints: res.evidencePoints,
         optionsCompared: res.optionsCompared,
@@ -582,6 +584,16 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
                           <span>Audit Ref: <strong>{turn.directExecutionResult.auditLogId}</strong></span>
                         )}
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {turn.isFallback && !isUser && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-3 flex items-start gap-2 text-amber-900">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="text-[11px]">
+                      <strong>Live AI unavailable.</strong>{' '}
+                      {turn.fallbackReason || 'This answer uses limited deterministic procurement rules.'}
                     </div>
                   </div>
                 )}

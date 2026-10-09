@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { DatabaseState } from './seedData';
 import {
   Supplier,
@@ -96,6 +96,7 @@ export interface AIStructuredResponse {
     auditLogId?: string;
   };
   isDeterministicFallback: boolean;
+  fallbackReason?: string;
 }
 
 /**
@@ -157,6 +158,39 @@ export function generateDeterministicAIAnalysis(
 
   const executedOperations: OperationExecutionLog[] = [];
   const qLower = query.toLowerCase();
+
+  const emptyConversationResponse = (answerMarkdown: string): AIStructuredResponse => ({
+    answerMarkdown,
+    workflowStage: 'Explain',
+    executedOperations: [],
+    identifiedRisks: [],
+    evidencePoints: [],
+    compoundingFactors: [],
+    optionsCompared: [],
+    recommendedAction: '',
+    confidenceScore: 100,
+    uncertainties: [],
+    isDeterministicFallback: true
+  });
+
+  if (/\b(?:what(?:'s| is) your name|who are you|what are you called)\b/i.test(query)) {
+    return emptyConversationResponse(
+      "I'm RiskPilot AI, the supplier-risk and procurement assistant in this app. I can help analyze supplier performance, inventory, compliance, pricing, and sourcing decisions."
+    );
+  }
+
+  if (/^(?:hi|hello|hey|good morning|good afternoon|good evening)[!.?, ]*$/i.test(query.trim())) {
+    return emptyConversationResponse(
+      "Hi! I'm RiskPilot AI. What supplier or procurement question can I help you investigate?"
+    );
+  }
+
+  const asksAboutProcurement = /\b(supplier|vendor|procurement|purchase|inventory|stock|lead time|component|part|compliance|certificate|contract|invoice|pricing|price|sourcing|quality|defect|delivery|apex|vanguard|helios|action|execute|dispatch|freeze|probation|hold|stress|surge|split|audit|negotiate|root cause|scrap|radar|briefing|benchmark|cmm)\b/i.test(query);
+  if (!asksAboutProcurement) {
+    return emptyConversationResponse(
+      "I can answer general questions when the live AI service is available. The local fallback is limited to supplier and procurement analysis, so I can't reliably answer this question right now."
+    );
+  }
 
   let answer = '';
   let stage: AIStructuredResponse['workflowStage'] = 'Explain';
@@ -1078,7 +1112,7 @@ export async function runAIInvestigation(
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    return generateDeterministicAIAnalysis(
+    const fallback = generateDeterministicAIAnalysis(
       query,
       state,
       supplier,
@@ -1092,6 +1126,8 @@ export async function runAIInvestigation(
       splitParams,
       sensitivityParams
     );
+    fallback.fallbackReason = 'GEMINI_API_KEY is not configured; using limited deterministic procurement responses.';
+    return fallback;
   }
 
   try {
@@ -1203,8 +1239,13 @@ RULES:
 2. DO NOT invent fake records, part numbers, or imaginary metrics.
 3. If the user asks about financial leakage, stress testing, head-to-head comparison, defect root cause pareto, legal cure notice, dual-sourcing splits, compliance horizon, or negotiation strategy, utilize the grounded agent tools results provided.
 4. State uncertainties and missing information explicitly.
-5. Follow the workflow: Observe → Reason → Evaluate → Decide → Prepare action → Explain.
-6. Provide your response as a strict JSON object matching the requested schema.
+5. Reason carefully before deciding: identify the relevant evidence, distinguish observed facts from derived conclusions, check units and dates, and show calculations for quantitative claims.
+6. Explain the causal link between evidence and risk, then compare realistic alternatives and their tradeoffs before recommending an action when the question calls for a decision.
+7. Check that the recommendation respects operational constraints such as stock cover, lead time, supplier approval status, and compliance deadlines. Never present an estimate as a measured fact.
+8. Scale detail to the question: answer simple factual questions directly; for complex or high-impact decisions, give a structured analysis with evidence, implications, options, recommendation, and uncertainties.
+9. Do not reveal private chain-of-thought. Provide only a concise, auditable rationale with supporting evidence and conclusions.
+10. Follow the workflow: Observe → Reason → Evaluate → Decide → Prepare action → Explain.
+11. Provide your response as a strict JSON object matching the requested schema.
 
 Context Data & Operational Tools:
 ${JSON.stringify(contextPayload, null, 2)}
@@ -1213,7 +1254,7 @@ ${conversationContext}Current User Question: "${query}"
 
 Return JSON matching this TypeScript structure:
 {
-  "answerMarkdown": "Comprehensive markdown response with headings, bullet points, data tables where useful, and quantitative analysis",
+  "answerMarkdown": "A useful markdown answer scaled to the question. For complex decisions, include a concise answer, evidence and calculations, implications, options/tradeoffs, recommendation, and uncertainties. Do not pad simple answers.",
   "workflowStage": "Observe" | "Reason" | "Evaluate" | "Decide" | "Prepare Action" | "Explain",
   "identifiedRisks": string[],
   "evidencePoints": string[],
@@ -1254,10 +1295,13 @@ Return JSON matching this TypeScript structure:
     );
 
     const generatePromise = ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.7-flash',
       contents: prompt,
       config: {
-        responseMimeType: 'application/json'
+        responseMimeType: 'application/json',
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.HIGH
+        }
       }
     });
 
@@ -1287,7 +1331,7 @@ Return JSON matching this TypeScript structure:
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
     console.info(`[AI Service] Using deterministic operations engine (${errorMsg})`);
-    return generateDeterministicAIAnalysis(
+    const fallback = generateDeterministicAIAnalysis(
       query,
       state,
       supplier,
@@ -1301,5 +1345,25 @@ Return JSON matching this TypeScript structure:
       splitParams,
       sensitivityParams
     );
+    let providerMessage = 'Gemini is unavailable; using limited deterministic procurement responses.';
+    try {
+      const errorBody = JSON.parse(errorMsg);
+      const status = errorBody?.error?.code ?? err?.status;
+      if (status === 429 || /quota|rate limit/i.test(errorBody?.error?.message ?? '')) {
+        providerMessage = 'Gemini API quota exceeded. Check the Google AI project quota or billing, then try again.';
+      } else if (status === 401 || status === 403) {
+        providerMessage = 'Gemini rejected the configured API key or its permissions. Check the key configuration.';
+      } else if (status === 404) {
+        providerMessage = 'The configured Gemini model was not found. Check the model name in the AI service configuration.';
+      }
+    } catch {
+      if (err?.status === 429 || /quota|rate limit/i.test(errorMsg)) {
+        providerMessage = 'Gemini API quota exceeded. Check the Google AI project quota or billing, then try again.';
+      } else if (err?.status === 401 || err?.status === 403) {
+        providerMessage = 'Gemini rejected the configured API key or its permissions. Check the key configuration.';
+      }
+    }
+    fallback.fallbackReason = providerMessage;
+    return fallback;
   }
 }
