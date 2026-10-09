@@ -3,11 +3,23 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { apiRouter } from './server/api';
+import fs from 'fs';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+async function ensureProductionBuild() {
+  const distIndex = path.resolve(__dirname, 'dist', 'index.html');
+  if (fs.existsSync(distIndex)) return;
+
+  const { build } = await import('vite');
+  await build({
+    configFile: path.resolve(__dirname, 'vite.config.ts'),
+    logLevel: 'warn'
+  });
+}
 
 async function startServer() {
   const app = express();
@@ -28,7 +40,8 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    // In production mode, serve built static assets from dist
+    await ensureProductionBuild();
+
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
