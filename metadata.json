@@ -1,0 +1,6 @@
+{
+  "name": "RiskPilot AI — Intelligent Supplier Risk & Procurement Agent",
+  "description": "AI-powered supplier risk intelligence and procurement decision platform identifying multi-signal supply chain vulnerabilities, price deviations, compliance risks, and automated action proposals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
