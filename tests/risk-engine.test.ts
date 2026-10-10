@@ -13,6 +13,7 @@ import { generateSeedData } from '../server/seedData';
 import { simulateDecisionsForSupplier } from '../server/decisionEngine';
 import { generateDeterministicAIAnalysis } from '../server/aiService';
 import { dataStore } from '../server/store';
+import { analyzeSparesDeskQuery, buildSparesDeskContext, getSparesDeskDataset, shouldAnalyzeSparesDeskQuery } from '../server/sparesDataset';
 
 let passedTests = 0;
 let totalTests = 0;
@@ -29,6 +30,113 @@ function assert(condition: boolean, testName: string) {
 }
 
 console.log('--- RUNNING RISKPILOT AI BUSINESS LOGIC & RISK ENGINE TESTS ---');
+
+// 0. Included Kaveri spare-parts dataset
+console.log('\n[Suite 0] Kaveri Spare-Parts Dataset');
+{
+  const dataset = getSparesDeskDataset();
+  assert(dataset.products.length === 126, 'Loads all 126 product SKUs from the included products CSV');
+  assert(dataset.inventory.length === 1008, 'Loads all 1,008 inventory records from the included inventory CSV');
+  assert(dataset.sales.length === 12777, 'Loads the complete 12,777-row sales history');
+  assert(dataset.suppliers.length === 205, 'Loads all supplier price/lead-time/MOQ quotes');
+  assert(dataset.purchaseOrders.length === 43, 'Loads all 43 purchase orders');
+  assert(shouldAnalyzeSparesDeskQuery('What is the stock and supplier price for SKU CLT-6120?'), 'Recognizes spare-parts questions for dataset analysis');
+
+  const queryScopedContext = buildSparesDeskContext('Analyze stock cover and supplier options for CLT-6120.');
+  assert(queryScopedContext.length < 12000, 'Keeps the model context compact for SKU-level dataset questions');
+  assert(!queryScopedContext.includes('allSupplierOffers') && !queryScopedContext.includes('allPurchaseOrders'), 'Does not duplicate complete supplier and order tables into the model context');
+
+  const clutchPart = analyzeSparesDeskQuery('What is the stock and supplier price for SKU CLT-6120?');
+  assert(!!clutchPart?.answerMarkdown.includes('114 units'), 'Computes SKU inventory across all eight locations');
+  assert(!!clutchPart?.answerMarkdown.includes('₹3,400'), 'Returns the actual supplier quote for the requested SKU');
+  assert(!!clutchPart?.answerMarkdown.includes('200'), 'Returns the supplier MOQ for the requested SKU');
+
+  const previousApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = '';
+  try {
+    const integrated = await dataStore.askAI('What is the stock and supplier price for SKU CLT-6120?');
+    assert(integrated.answerMarkdown.includes('114 units'), 'Routes real assistant requests through the included spare-parts dataset');
+    assert(integrated.analysisSource === 'dataset', 'Identifies exact CSV-based answers as dataset analysis, not a limited AI fallback');
+    assert(integrated.isDeterministicFallback && !!integrated.fallbackReason?.includes('CSV dataset'), 'Clearly states when a dataset answer was calculated without Gemini');
+    assert(integrated.executedOperations.some(operation => operation.operationName === 'Kaveri Spare Parts Dataset Analysis'), 'Records the spare-parts data analysis operation');
+  } finally {
+    if (previousApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousApiKey;
+  }
+
+  const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  const previousModel = process.env.OPENROUTER_MODEL;
+  const previousFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  process.env.GEMINI_API_KEY = '';
+  process.env.OPENROUTER_MODEL = 'openai/o3';
+  let capturedRequest: { url: string; authorization: string; body: any } | undefined;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedRequest = {
+      url: String(input),
+      authorization: new Headers(init?.headers).get('Authorization') || '',
+      body: JSON.parse(String(init?.body || '{}'))
+    };
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        answerMarkdown: 'I checked the dataset evidence and verified the requested SKU facts.',
+        workflowStage: 'Reason',
+        executedOperations: [],
+        identifiedRisks: [],
+        evidencePoints: ['Mocked provider response for test only.'],
+        compoundingFactors: [],
+        optionsCompared: [],
+        recommendedAction: 'Verify the stock snapshot before ordering.',
+        confidenceScore: 90,
+        uncertainties: []
+      }) } }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const fileAnswer = await dataStore.askAI('can you explain what is products.csv is about');
+    assert(fileAnswer.analysisSource === 'dataset', 'Routes included CSV file questions to direct dataset documentation');
+    assert(fileAnswer.answerMarkdown.includes('126 data rows'), 'Explains the products CSV with its verified row count');
+    assert(fileAnswer.answerMarkdown.includes('product_name') && fileAnswer.answerMarkdown.includes('machine_model'), 'Lists the actual products CSV columns');
+    assert(capturedRequest === undefined, 'Answers known CSV file explanations without depending on an external AI provider');
+
+    const inventoryPreview = await dataStore.askAI('can you list the first 10 line from inventory.csv');
+    assert(inventoryPreview.answerMarkdown.includes('### First 10 lines of inventory.csv'), 'Recognizes literal CSV line-preview requests');
+    assert(inventoryPreview.answerMarkdown.includes('```csv\nsku,location,stock\nBLT-1003,Gokak,9'), 'Returns the actual CSV header and first rows without reformatting');
+    assert(inventoryPreview.answerMarkdown.includes('BLT-1012,Gokak,26') && !inventoryPreview.answerMarkdown.includes('BLT-1012,Belgaum,2'), 'Honors the requested first-ten-physical-lines boundary');
+    assert(inventoryPreview.executedOperations.length === 0, 'Does not attach unrelated procurement-agent operations to a simple file preview');
+
+    const providerResponse = await dataStore.askAI('Analyze stock cover and supplier options for CLT-6120.');
+    assert(providerResponse.analysisSource === 'openrouter', 'Uses OpenRouter when its server-side API key is configured');
+    assert(!providerResponse.isDeterministicFallback, 'Returns the live-provider response as non-fallback analysis');
+    assert(capturedRequest?.url === 'https://openrouter.ai/api/v1/chat/completions', 'Calls the OpenRouter chat completions API');
+    assert(capturedRequest?.authorization === 'Bearer test-openrouter-key', 'Sends the configured key only as a server-side authorization header');
+    assert(capturedRequest?.body.model === 'openai/o3' && capturedRequest?.body.reasoning?.effort === 'high', 'Requests the configured reasoning model at high effort');
+    assert(capturedRequest?.body.response_format?.type === 'json_object', 'Requests structured JSON output for reliable answer parsing');
+    assert(capturedRequest?.body.max_tokens === 2000, 'Keeps the reasoning completion budget below the observed account affordability limit');
+    assert(!capturedRequest?.body.messages?.[1]?.content.includes('Full Ledger Contract Price Discrepancy Audit'), 'Excludes unrelated demo procurement tools from spare-parts reasoning prompts');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+    if (previousModel === undefined) delete process.env.OPENROUTER_MODEL;
+    else process.env.OPENROUTER_MODEL = previousModel;
+    if (previousApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousApiKey;
+  }
+
+  const openOrders = analyzeSparesDeskQuery('Show me all open purchase orders');
+  assert(!!openOrders?.answerMarkdown.includes('Open purchase orders'), 'Can answer purchase-order status questions from the included table');
+  assert(!!openOrders?.answerMarkdown.includes('PO-4404'), 'Includes actual matching purchase-order records');
+
+  const locationSales = analyzeSparesDeskQuery('How many units were sold in Hubli?');
+  assert(!!locationSales?.answerMarkdown.includes('Sales in Hubli'), 'Answers sales questions for a named store');
+
+  const compatibleParts = analyzeSparesDeskQuery('Which products fit the JCB 3DX?');
+  assert(!!compatibleParts?.answerMarkdown.includes('Matching products'), 'Finds products by machine model');
+
+  const cheapestQuotes = analyzeSparesDeskQuery('Which supplier offers the lowest price?');
+  assert(!!cheapestQuotes?.answerMarkdown.includes('Lowest supplier offers'), 'Compares lowest supplier quotes across SKUs');
+}
 
 // 1. Contract price deviation
 console.log('\n[Suite 1] Price Deviation Calculations');
@@ -221,6 +329,31 @@ console.log('\n[Suite 9] Action Lifecycle, Approval & Rejection Persistence');
   const rejected = dataStore.reviewAction(secondAction.id, 'REJECTED', 'Sarah Chen', 'Supplier lacks AS9100 accreditation.');
   assert(rejected.status === 'REJECTED', 'Action status is strictly REJECTED, never approved');
   assert(rejected.reviewComment === 'Supplier lacks AS9100 accreditation.', 'Rejection reason persisted');
+}
+
+// 10. Dataset analysis ingestion
+console.log('\n[Suite 10] Custom Dataset Analysis');
+{
+  const dataset = `region,orders,defect_rate,late_shipments,revenue\nNorth,120,2.5,8,85000\nSouth,94,5.1,14,67000\nEast,160,3.4,10,98000\nWest,76,7.2,19,54000`;
+
+  const result = generateDeterministicAIAnalysis(
+    'Analyze this dataset and tell me where the biggest risk is.',
+    dataStore.getState(),
+    dataStore.getState().suppliers[0],
+    dataStore.getState().items[0],
+    [],
+    [],
+    [],
+    [],
+    [],
+    undefined,
+    undefined,
+    undefined,
+    dataset
+  );
+
+  assert(result.answerMarkdown.toLowerCase().includes('west') || result.answerMarkdown.toLowerCase().includes('risk'), 'Dataset analysis responds with region-level risk insight');
+  assert(result.isDeterministicFallback === true, 'Dataset analysis uses fallback reasoning when custom data is supplied');
 }
 
 // 10. AI service fallback and deterministic reasoning

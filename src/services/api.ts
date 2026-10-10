@@ -116,12 +116,13 @@ export const api = {
     history?: { role: 'user' | 'assistant'; content: string }[],
     stressParams?: { demandSurgePct?: number; delayDays?: number },
     splitParams?: { primaryPct?: number },
-    sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number }
+    sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number },
+    datasetContext?: string
   ): Promise<AIStructuredResponse> {
     const res = await fetch('/api/ai/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, supplierId, itemId, history, stressParams, splitParams, sensitivityParams })
+      body: JSON.stringify({ query, supplierId, itemId, history, datasetContext, stressParams, splitParams, sensitivityParams })
     });
     if (!res.ok) throw new Error('AI query failed');
     return res.json();

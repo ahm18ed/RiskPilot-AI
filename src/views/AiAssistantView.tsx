@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Brain,
   Send,
@@ -29,6 +31,31 @@ import { api } from '../services/api';
 import { ActionDraft, OperationExecutionLog } from '../../server/types';
 import { AIStructuredResponse } from '../../server/aiService';
 
+const assistantMarkdownComponents: Components = {
+  h1: ({ children }) => <h1 className="text-base font-bold text-slate-950 border-b border-slate-200 pb-2 mb-3">{children}</h1>,
+  h2: ({ children }) => <h2 className="text-sm font-bold text-slate-900 mt-5 mb-2">{children}</h2>,
+  h3: ({ children }) => <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 mt-4 mb-1.5">{children}</h3>,
+  p: ({ children }) => <p className="my-2 leading-6 text-slate-700">{children}</p>,
+  ul: ({ children }) => <ul className="my-2 ml-5 list-disc space-y-1 text-slate-700">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 ml-5 list-decimal space-y-1 text-slate-700">{children}</ol>,
+  li: ({ children }) => <li className="pl-1 leading-5">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
+  blockquote: ({ children }) => <blockquote className="my-3 border-l-2 border-blue-400 bg-blue-50/70 px-3 py-1 text-slate-700">{children}</blockquote>,
+  hr: () => <hr className="my-4 border-slate-200" />,
+  table: ({ children }) => (
+    <div className="my-3 overflow-x-auto rounded-md border border-slate-200">
+      <table className="w-full min-w-max border-collapse text-left text-[11px]">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-slate-100 text-slate-700">{children}</thead>,
+  th: ({ children }) => <th className="border-b border-slate-200 px-3 py-2 font-semibold">{children}</th>,
+  td: ({ children }) => <td className="border-b border-slate-100 px-3 py-2 align-top text-slate-700">{children}</td>,
+  tr: ({ children }) => <tr className="even:bg-slate-50/70">{children}</tr>,
+  a: ({ children, href }) => <a className="text-blue-700 underline underline-offset-2" href={href} target="_blank" rel="noreferrer">{children}</a>,
+  code: ({ children }) => <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.9em] text-slate-800">{children}</code>,
+  pre: ({ children }) => <pre className="my-3 overflow-x-auto rounded-md bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">{children}</pre>
+};
+
 interface ChatTurn {
   id: string;
   role: 'user' | 'assistant';
@@ -36,9 +63,11 @@ interface ChatTurn {
   timestamp: string;
   operations?: OperationExecutionLog[];
   workflowStage?: string;
+  analysisSource?: AIStructuredResponse['analysisSource'];
   confidenceScore?: number;
   isFallback?: boolean;
   fallbackReason?: string;
+  identifiedRisks?: string[];
   compoundingFactors?: string[];
   evidencePoints?: string[];
   optionsCompared?: {
@@ -68,6 +97,7 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
 }) => {
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>(initialSupplierId);
   const [inputQuery, setInputQuery] = useState('');
+  const [datasetText, setDatasetText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,7 +120,9 @@ export const AiAssistantView: React.FC<AiAssistantViewProps> = ({
       role: 'assistant',
       content: `### Welcome to RiskPilot AI Autonomous Procurement Agent
 
-I am your multi-system intelligence agent. I continuously evaluate live contracts, purchase orders, inspection lots, regulatory documents, and inventory buffers across all 150 suppliers.
+    I can analyze the live supplier-risk workspace and the included **Kaveri Spares & Hydraulics** dataset: 126 product SKUs, stock across six stores and two warehouses, sales history, 205 supplier quotes, and 43 purchase orders.
+
+    Ask questions such as **“Which SKUs are low on stock?”, “Show stock for CLT-6120 by location”, “Which supplier has the lowest quote for BLT-1032?”, “What sold most in Hubli?”,** or **“Show open purchase orders.”**
 
 **You can ask me to execute any procurement operation:**
 - 🔬 **Defect Root Cause Pareto**: Analyze failure mechanisms (porosity vs runout), scrap costs, and CMM containment.
@@ -139,7 +171,8 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
         historyPayload,
         options?.stressParams || (showAdvancedParams ? { demandSurgePct, delayDays } : undefined),
         options?.splitParams || (showAdvancedParams ? { primaryPct: splitRatioPrimaryPct } : undefined),
-        options?.sensitivityParams || (showAdvancedParams ? { defectThresholdPct: tightenedDefectTol } : undefined)
+        options?.sensitivityParams || (showAdvancedParams ? { defectThresholdPct: tightenedDefectTol } : undefined),
+        datasetText.trim() || undefined
       );
 
       const assistantTurn: ChatTurn = {
@@ -149,9 +182,11 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         operations: res.executedOperations,
         workflowStage: res.workflowStage,
+        analysisSource: res.analysisSource,
         confidenceScore: res.confidenceScore,
         isFallback: res.isDeterministicFallback,
         fallbackReason: res.fallbackReason,
+        identifiedRisks: res.identifiedRisks,
         compoundingFactors: res.compoundingFactors,
         evidencePoints: res.evidencePoints,
         optionsCompared: res.optionsCompared,
@@ -208,7 +243,7 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
             Autonomous AI Procurement Intelligence Agent
           </h1>
           <p className="text-slate-500 text-xs mt-0.5">
-            Full-spectrum multi-system agent equipped with 12 specialized operations: forensic root cause, legal breach notices, dual-sourcing optimization, shock testing, and direct database execution.
+            Analyze the included spare-parts CSVs or run the supplier-risk operations below. Dataset answers use the supplied snapshot and linked stock, sales, supplier, and order data.
           </p>
         </div>
 
@@ -531,6 +566,7 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
       <div className="space-y-4">
         {chatHistory.map(turn => {
           const isUser = turn.role === 'user';
+          const datasetProviderUnavailable = turn.isFallback && /openrouter|gemini|live ai|provider|credit|quota|rate limit/i.test(turn.fallbackReason || '');
           return (
             <div
               key={turn.id}
@@ -556,6 +592,16 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
                     {turn.workflowStage && (
                       <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 border border-slate-200 rounded font-bold">
                         Stage: {turn.workflowStage}
+                      </span>
+                    )}
+                    {turn.analysisSource === 'openrouter' && (
+                      <span className="px-1.5 py-0.2 bg-violet-50 text-violet-700 border border-violet-200 rounded font-bold">
+                        OpenRouter · high reasoning
+                      </span>
+                    )}
+                    {turn.analysisSource === 'gemini' && (
+                      <span className="px-1.5 py-0.2 bg-blue-50 text-blue-700 border border-blue-200 rounded font-bold">
+                        Gemini AI
                       </span>
                     )}
                     <span>{turn.timestamp}</span>
@@ -588,7 +634,21 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
                   </div>
                 )}
 
-                {turn.isFallback && !isUser && (
+                {turn.analysisSource === 'dataset' && !isUser && (
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3 flex items-start gap-2 text-blue-900">
+                    <FileBarChart className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="text-[11px]">
+                      <strong>{datasetProviderUnavailable ? 'Dataset-backed answer (live AI unavailable).' : turn.isFallback ? 'Direct answer from the dataset.' : 'AI analysis grounded in the dataset.'}</strong>{' '}
+                      {datasetProviderUnavailable
+                        ? turn.fallbackReason
+                        : turn.isFallback
+                          ? 'This answer is read or calculated directly from the included Kaveri spare-parts CSV snapshot.'
+                        : 'This answer uses the included Kaveri spare-parts CSV snapshot.'}
+                    </div>
+                  </div>
+                )}
+
+                {turn.isFallback && turn.analysisSource !== 'dataset' && !isUser && (
                   <div className="bg-amber-50 border border-amber-300 rounded p-3 flex items-start gap-2 text-amber-900">
                     <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                     <div className="text-[11px]">
@@ -613,12 +673,55 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
                   </div>
                 )}
 
-                {/* Markdown Prose Response */}
-                <div className={`prose max-w-none text-xs leading-relaxed whitespace-pre-line ${
-                  isUser ? 'prose-invert text-white' : 'text-slate-800'
-                }`}>
-                  {turn.content}
-                </div>
+                {/* Render assistant Markdown as structured headings, lists, and tables. */}
+                {isUser ? (
+                  <div className="whitespace-pre-wrap text-xs leading-5 text-white">{turn.content}</div>
+                ) : (
+                  <div className="max-w-none text-xs leading-relaxed">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
+                      {turn.content}
+                    </ReactMarkdown>
+                  </div>
+                )}
+
+                {!isUser && ((turn.evidencePoints?.length ?? 0) > 0 || (turn.uncertainties?.length ?? 0) > 0 || (turn.identifiedRisks?.length ?? 0) > 0) && (
+                  <details className="mt-3 rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[11px] font-semibold text-slate-700">
+                      <span>Evidence &amp; confidence checks</span>
+                      {typeof turn.confidenceScore === 'number' && (
+                        <span className="rounded bg-white px-2 py-0.5 font-mono text-[10px] text-slate-600">
+                          {Math.round(turn.confidenceScore)}% confidence
+                        </span>
+                      )}
+                    </summary>
+                    <div className="mt-2 space-y-2 text-[11px] leading-5 text-slate-700">
+                      {(turn.evidencePoints?.length ?? 0) > 0 && (
+                        <div>
+                          <strong className="text-slate-900">Evidence used</strong>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {turn.evidencePoints!.map((point, index) => <li key={`evidence-${index}`}>{point}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {(turn.identifiedRisks?.length ?? 0) > 0 && (
+                        <div>
+                          <strong className="text-slate-900">Risks identified</strong>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {turn.identifiedRisks!.map((risk, index) => <li key={`risk-${index}`}>{risk}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {(turn.uncertainties?.length ?? 0) > 0 && (
+                        <div>
+                          <strong className="text-slate-900">Limits / uncertainties</strong>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {turn.uncertainties!.map((uncertainty, index) => <li key={`uncertainty-${index}`}>{uncertainty}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
 
                 {/* Downloadable Artifact Box (Legal letter / 8D Plan / Negotiation script) */}
                 {turn.downloadableArtifact && (
@@ -744,6 +847,18 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
 
       {/* Input Bar */}
       <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-xs sticky bottom-4">
+        <div className="mb-3">
+          <label className="block text-[10px] font-mono uppercase tracking-wide text-slate-500 mb-1.5">
+            Optional dataset to analyze (JSON/CSV)
+          </label>
+          <textarea
+            value={datasetText}
+            onChange={e => setDatasetText(e.target.value)}
+            rows={4}
+            placeholder={'Paste a dataset here, e.g.\nregion,orders,defect_rate\nNorth,120,2.5\nWest,76,7.2'}
+            className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-slate-400 resize-y"
+          />
+        </div>
         <form
           onSubmit={e => {
             e.preventDefault();
@@ -764,7 +879,7 @@ I am your multi-system intelligence agent. I continuously evaluate live contract
             className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-medium rounded text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-            <span>Send Request</span>
+            <span>{loading ? 'Analyzing evidence…' : 'Send Request'}</span>
           </button>
         </form>
       </div>

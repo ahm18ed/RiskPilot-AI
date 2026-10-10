@@ -267,7 +267,8 @@ class ProcurementDataStore {
     history?: any[],
     stressParams?: { demandSurgePct?: number; delayDays?: number },
     splitParams?: { primaryPct?: number },
-    sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number }
+    sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number },
+    datasetContext?: string
   ): Promise<AIStructuredResponse> {
     const targetSupplierId = supplierId || 'SUP-001';
     const supplier = this.state.suppliers.find(s => s.id === targetSupplierId) || this.state.suppliers[0];
@@ -305,7 +306,8 @@ class ProcurementDataStore {
       history,
       stressParams,
       splitParams,
-      sensitivityParams
+      sensitivityParams,
+      datasetContext
     );
 
     this.recordAudit({

@@ -27,6 +27,7 @@ import {
   analyzeSensitivityThresholds,
   generateNegotiationPlaybook
 } from './agentTools';
+import { analyzeSparesDeskQuery, buildSparesDeskContext, isSparesDatasetFileQuestion, shouldAnalyzeSparesDeskQuery } from './sparesDataset';
 
 export interface AIInvestigationRequest {
   query: string;
@@ -34,6 +35,7 @@ export interface AIInvestigationRequest {
   selectedItemId?: string;
   conversationHistory?: ChatMessage[];
   operationOverride?: string;
+  datasetContext?: string;
   stressParams?: {
     demandSurgePct?: number;
     delayDays?: number;
@@ -49,6 +51,7 @@ export interface AIInvestigationRequest {
 
 export interface AIStructuredResponse {
   answerMarkdown: string;
+  analysisSource?: 'openrouter' | 'gemini' | 'dataset' | 'deterministic';
   workflowStage: 'Observe' | 'Reason' | 'Evaluate' | 'Decide' | 'Prepare Action' | 'Explain';
   executedOperations: OperationExecutionLog[];
   identifiedRisks: string[];
@@ -99,6 +102,216 @@ export interface AIStructuredResponse {
   fallbackReason?: string;
 }
 
+const configuredOpenRouterKey = () => {
+  const key = process.env.OPENROUTER_API_KEY?.trim();
+  return key && key !== 'YOUR_OPENROUTER_API_KEY' ? key : undefined;
+};
+
+async function requestOpenRouter(prompt: string, apiKey: string): Promise<string> {
+  const model = process.env.OPENROUTER_MODEL?.trim() || 'openai/o3';
+  const effort = process.env.OPENROUTER_REASONING_EFFORT?.trim() || 'high';
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || process.env.APP_URL || 'http://localhost:3000',
+      'X-Title': process.env.OPENROUTER_APP_NAME || 'RiskPilot AI'
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: 'Return only a valid JSON object matching the response schema requested by the user. Follow the evidence, accuracy, and privacy rules exactly.' },
+        { role: 'user', content: prompt }
+      ],
+      response_format: { type: 'json_object' },
+      reasoning: { effort, exclude: true },
+      // Keep completion budget below the currently observed OpenRouter account
+      // affordability limit while allowing a useful structured analysis.
+      max_tokens: 2000
+    }),
+    signal: AbortSignal.timeout(90_000)
+  });
+
+  const payload = await response.json().catch(() => ({} as any));
+  if (!response.ok) {
+    const message = payload?.error?.message || `OpenRouter request failed with HTTP ${response.status}`;
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+
+  const content = payload?.choices?.[0]?.message?.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: any) => typeof part?.text === 'string' ? part.text : '').join('')
+      : '';
+  if (!text.trim()) throw new Error('OpenRouter returned an empty response');
+  return text;
+}
+
+function parseDatasetContext(datasetContext?: string): { rows: Record<string, any>[]; columns: string[] } | null {
+  if (!datasetContext || !datasetContext.trim()) return null;
+
+  const datasetText = datasetContext.trim();
+  if (datasetText.length < 12) return null;
+
+  const parseJSONArray = (value: any): Record<string, any>[] => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+    if (value && typeof value === 'object') {
+      const candidateArrays = ['records', 'data', 'rows'];
+      for (const key of candidateArrays) {
+        if (Array.isArray((value as any)[key])) {
+          return (value as any)[key].filter((item: any) => item && typeof item === 'object' && !Array.isArray(item));
+        }
+      }
+      return [value as Record<string, any>];
+    }
+    return [];
+  };
+
+  try {
+    const parsed = JSON.parse(datasetText);
+    const rows = parseJSONArray(parsed);
+    if (rows.length > 0) {
+      const columns = Array.from(new Set(rows.flatMap(row => Object.keys(row))));
+      return { rows, columns };
+    }
+  } catch {
+    // fall through to CSV parsing
+  }
+
+  const lines = datasetText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+
+  const delimiter = /\t/.test(lines[0]) ? '\t' : ',';
+  const headers = lines[0].split(delimiter).map(cell => cell.trim()).filter(Boolean);
+  const rows = lines.slice(1).map(line => {
+    const values = line.split(delimiter).map(cell => cell.trim());
+    const row: Record<string, any> = {};
+    headers.forEach((header, idx) => {
+      const rawValue = values[idx] ?? '';
+      const numericValue = Number(rawValue);
+      row[header] = Number.isFinite(numericValue) && rawValue !== '' ? numericValue : rawValue;
+    });
+    return row;
+  }).filter(row => Object.values(row).some(value => String(value).trim().length > 0));
+
+  if (rows.length === 0) return null;
+  return { rows, columns: headers };
+}
+
+function summarizeCustomDataset(query: string, datasetContext?: string): AIStructuredResponse | null {
+  if (!datasetContext) return null;
+  const matchesDatasetIntent = /dataset|spreadsheet|csv|json|rows|columns|table|analyze this data|custom data/i.test(query) || !!datasetContext;
+  if (!matchesDatasetIntent) return null;
+
+  const parsed = parseDatasetContext(datasetContext);
+  if (!parsed) return null;
+
+  const { rows, columns } = parsed;
+  const valuesByField = new Map<string, number[]>();
+
+  for (const field of columns) {
+    const values = rows
+      .map(row => row[field])
+      .filter(value => typeof value === 'number' && Number.isFinite(value));
+    if (values.length > 0) valuesByField.set(field, values);
+  }
+
+  const candidateRiskFields = ['defect_rate', 'late_shipments', 'rejection_rate', 'risk_score', 'failure_rate', 'delay_days', 'error_rate'];
+  const fieldScores = Array.from(valuesByField.entries())
+    .map(([field, values]) => {
+      const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+      return { field, avg, max: Math.max(...values), total: values.reduce((sum, value) => sum + value, 0) };
+    })
+    .sort((a, b) => b.max - a.max);
+
+  const leadingField = fieldScores.find(item => candidateRiskFields.some(candidate => item.field.toLowerCase().includes(candidate))) ?? fieldScores[0];
+  const worstRow = rows.reduce((winner, current) => {
+    const currentRisk = Object.entries(current)
+      .filter(([key, value]) => typeof value === 'number')
+      .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+    const winnerRisk = Object.entries(winner)
+      .filter(([key, value]) => typeof value === 'number')
+      .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+    return currentRisk > winnerRisk ? current : winner;
+  }, rows[0]);
+
+  const worstRowName = Object.entries(worstRow).find(([key, value]) => /region|supplier|vendor|name|site|location|segment/i.test(key) && typeof value === 'string')?.[1] || 'the highest-risk row';
+  const leadMetric = leadingField ? `${leadingField.field.replace(/_/g, ' ')} averages ${leadingField.avg.toFixed(1)} with a peak of ${leadingField.max.toFixed(1)}` : 'the supplied numeric data';
+
+  const summaryText = `### Dataset review
+I analyzed ${rows.length} rows across ${columns.length} fields from the dataset you provided. The clearest risk signal is in ${worstRowName}: ${leadMetric}. This means the most concerning segment is materially above the rest of the dataset and should be addressed first. The dataset indicates a concentrated operational risk rather than a broad, uniform issue.`;
+
+  const risks = [
+    `${worstRowName} is the highest-risk segment based on the strongest numeric signal in the dataset.`,
+    `The pattern is concentrated in the dataset rather than evenly distributed across all rows.`
+  ];
+
+  const evidencePoints = [
+    `Reviewed ${rows.length} records and ${columns.length} data columns.`,
+    `Leading risk metric: ${leadMetric}.`,
+    `${worstRowName} is the strongest outlier based on the highest combined numeric signal.`
+  ];
+
+  return {
+    answerMarkdown: `${summaryText}\n\n### Recommended action\nPrioritize ${worstRowName} for urgent review and mitigation. Validate the underlying drivers, isolate the root cause, and decide whether the response should be containment, corrective action, or a sourcing change based on the materiality and operational impact explained in the dataset.`,
+    workflowStage: 'Evaluate',
+    executedOperations: [{
+      operationType: 'SUPPLIER_RISK_INVESTIGATION',
+      operationName: 'Custom Dataset Analysis',
+      parameters: { datasetLength: datasetContext.length, rows, columns },
+      computedMetrics: { rowCount: rows.length, columnCount: columns.length, leadingField: leadingField?.field || 'N/A' },
+      executionTimestamp: new Date().toISOString()
+    }],
+    identifiedRisks: risks,
+    evidencePoints,
+    compoundingFactors: ['The result is based only on the user-supplied dataset; operational context may still change final business action.'],
+    optionsCompared: [
+      {
+        name: 'Immediate containment',
+        financialImpact: 'Moderate to high if losses continue',
+        leadTime: 'Fastest response',
+        stockOutRisk: 'Low to moderate',
+        pros: ['Stops escalation quickly', 'Simple to deploy'],
+        cons: ['May not solve root cause']
+      },
+      {
+        name: 'Targeted corrective action',
+        financialImpact: 'Lower than uncontrolled exposure',
+        leadTime: 'Medium',
+        stockOutRisk: 'Low',
+        pros: ['Addresses root cause', 'More durable'],
+        cons: ['Requires investigation capacity']
+      }
+    ],
+    recommendedAction: `Escalate and investigate ${worstRowName} immediately based on the dataset's outlier risk pattern.`,
+    confidenceScore: 86,
+    uncertainties: ['This recommendation is derived from the dataset supplied by the user; more operational context may refine prioritization.'],
+    isDeterministicFallback: true,
+    fallbackReason: 'Custom dataset analysis mode is active; the app is using a direct data-review fallback before live AI reasoning.',
+    suggestedActionDraft: {
+      actionType: 'QUALITY_INSPECTION',
+      title: `Investigate ${worstRowName} dataset anomaly`,
+      supplierId: 'DATASET',
+      supplierName: 'Custom Dataset',
+      itemId: 'DATASET',
+      itemCode: 'CUSTOM-DATA',
+      itemName: 'User supplied dataset',
+      reason: 'The dataset shows a material outlier requiring immediate root-cause review.',
+      supportingEvidence: `Leading metric: ${leadMetric}.`,
+      recommendedDeadline: 'Within 3 business days',
+      urgency: 'HIGH',
+      expectedOutcome: 'Confirm the source of the concentration and implement containment actions.',
+      assignedTo: 'Operations Lead',
+      notes: 'Dataset-driven investigation.'
+    }
+  };
+}
+
 /**
  * Deterministic multi-operation reasoning engine
  */
@@ -114,7 +327,8 @@ export function generateDeterministicAIAnalysis(
   lotsOrState?: InspectionLot[] | DatabaseState,
   stressParams?: { demandSurgePct?: number; delayDays?: number },
   splitParams?: { primaryPct?: number },
-  sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number }
+  sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number },
+  datasetContext?: string
 ): AIStructuredResponse {
   let state: DatabaseState;
   let supplier: Supplier;
@@ -158,6 +372,11 @@ export function generateDeterministicAIAnalysis(
 
   const executedOperations: OperationExecutionLog[] = [];
   const qLower = query.toLowerCase();
+
+  const datasetResponse = summarizeCustomDataset(query, datasetContext);
+  if (datasetResponse) {
+    return datasetResponse;
+  }
 
   const emptyConversationResponse = (answerMarkdown: string): AIStructuredResponse => ({
     answerMarkdown,
@@ -1107,11 +1326,29 @@ export async function runAIInvestigation(
   history?: ChatMessage[],
   stressParams?: { demandSurgePct?: number; delayDays?: number },
   splitParams?: { primaryPct?: number },
-  sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number }
+  sensitivityParams?: { defectThresholdPct?: number; priceDeviationPct?: number },
+  datasetContext?: string
 ): Promise<AIStructuredResponse> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const openRouterKey = configuredOpenRouterKey();
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const hasGeminiKey = !!geminiKey && geminiKey !== 'MY_GEMINI_API_KEY';
+  const selectedProvider = openRouterKey ? 'OpenRouter' : hasGeminiKey ? 'Gemini' : undefined;
+  const sparesDeskResponse = !datasetContext && shouldAnalyzeSparesDeskQuery(query)
+    ? analyzeSparesDeskQuery(query)
+    : null;
 
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+  if (!datasetContext && isSparesDatasetFileQuestion(query) && sparesDeskResponse) {
+    return sparesDeskResponse;
+  }
+
+  if (!selectedProvider) {
+    if (sparesDeskResponse) {
+      return {
+        ...sparesDeskResponse,
+        fallbackReason: 'No live AI provider is configured; this answer was calculated directly from the included spare-parts CSV dataset.'
+      };
+    }
+
     const fallback = generateDeterministicAIAnalysis(
       query,
       state,
@@ -1124,34 +1361,34 @@ export async function runAIInvestigation(
       lots,
       stressParams,
       splitParams,
-      sensitivityParams
+      sensitivityParams,
+      datasetContext
     );
-    fallback.fallbackReason = 'GEMINI_API_KEY is not configured; using limited deterministic procurement responses.';
+    fallback.fallbackReason = 'No live AI provider is configured; using limited deterministic procurement responses.';
     return fallback;
   }
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build'
-        }
-      }
+    const ai = openRouterKey ? undefined : new GoogleGenAI({
+      apiKey: geminiKey!,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
     });
 
-    // Run baseline operations to provide grounding tools context
-    const finAudit = auditPortfolioFinancialExposure(state);
-    const stressSim = runInventoryStressTest(state, item.code, stressParams?.demandSurgePct ?? 30, stressParams?.delayDays ?? 10);
-    const benchmarkComp = compareSuppliersHeadToHead(state, ['SUP-001', 'SUP-042', 'SUP-089']);
-    const singleBottlenecks = scanSingleSourceBottlenecks(state);
-    const rootCauses = analyzeRootCauseDefects(state, supplier.id, item.id);
-    const legalNotice = generateLegalDisputeCureNotice(state, supplier.id, item.id);
-    const splitOpt = optimizeSourcingSplit(state, supplier.id, 'SUP-042', item.id, splitParams?.primaryPct ?? 70);
-    const complianceRadar = forecastComplianceExpiryHorizon(state, 90);
-    const negotiationBook = generateNegotiationPlaybook(state, supplier.id, item.id);
+    // Spare-parts questions use their own CSV dataset, not the unrelated aerospace demo tools.
+    const finAudit = sparesDeskResponse ? undefined : auditPortfolioFinancialExposure(state);
+    const stressSim = sparesDeskResponse ? undefined : runInventoryStressTest(state, item.code, stressParams?.demandSurgePct ?? 30, stressParams?.delayDays ?? 10);
+    const benchmarkComp = sparesDeskResponse ? undefined : compareSuppliersHeadToHead(state, ['SUP-001', 'SUP-042', 'SUP-089']);
+    const singleBottlenecks = sparesDeskResponse ? undefined : scanSingleSourceBottlenecks(state);
+    const rootCauses = sparesDeskResponse ? undefined : analyzeRootCauseDefects(state, supplier.id, item.id);
+    const legalNotice = sparesDeskResponse ? undefined : generateLegalDisputeCureNotice(state, supplier.id, item.id);
+    const splitOpt = sparesDeskResponse ? undefined : optimizeSourcingSplit(state, supplier.id, 'SUP-042', item.id, splitParams?.primaryPct ?? 70);
+    const complianceRadar = sparesDeskResponse ? undefined : forecastComplianceExpiryHorizon(state, 90);
+    const negotiationBook = sparesDeskResponse ? undefined : generateNegotiationPlaybook(state, supplier.id, item.id);
 
-    const contextPayload = {
+    const contextPayload = sparesDeskResponse ? {
+      dataSource: 'Kaveri Spares & Hydraulics CSV snapshot',
+      instruction: 'Answer using only the authoritative spare-parts CSV context supplied below. Ignore the procurement demonstration dataset.'
+    } : {
       supplier: {
         id: supplier.id,
         name: supplier.name,
@@ -1175,18 +1412,18 @@ export async function runAIInvestigation(
         isSingleSource: item.approvedSupplierIds.length <= 1
       },
       groundedAgentToolsResults: {
-        portfolioFinancialAudit: finAudit.summary,
-        inventoryStressSimulation: stressSim.stressResults,
-        headToHeadBenchmark: benchmarkComp.comparisonMatrix,
+        portfolioFinancialAudit: finAudit!.summary,
+        inventoryStressSimulation: stressSim!.stressResults,
+        headToHeadBenchmark: benchmarkComp!.comparisonMatrix,
         singleSourceBottlenecksSummary: {
-          totalSingleSource: singleBottlenecks.bottlenecks.length,
-          classASingleSources: singleBottlenecks.bottlenecks.filter(b => b.criticality === 'A')
+          totalSingleSource: singleBottlenecks!.bottlenecks.length,
+          classASingleSources: singleBottlenecks!.bottlenecks.filter(b => b.criticality === 'A')
         },
-        qualityRootCausePareto: rootCauses.defectAnalysis,
-        legalDisputeCureDetails: legalNotice.cureNotice,
-        dualSourcingSplitSimulation: splitOpt.splitOptimization,
-        complianceExpiryHorizonRadar: complianceRadar.expiryForecast,
-        negotiationLevers: negotiationBook.playbook.bargainingLevers
+        qualityRootCausePareto: rootCauses!.defectAnalysis,
+        legalDisputeCureDetails: legalNotice!.cureNotice,
+        dualSourcingSplitSimulation: splitOpt!.splitOptimization,
+        complianceExpiryHorizonRadar: complianceRadar!.expiryForecast,
+        negotiationLevers: negotiationBook!.playbook.bargainingLevers
       },
       candidateAlternatives: candidateSuppliers.map(c => ({
         id: c.id,
@@ -1231,6 +1468,12 @@ export async function runAIInvestigation(
       ? `Prior Conversation:\n${history.map(m => `${m.role}: ${m.content}`).join('\n')}\n\n`
       : '';
 
+    const datasetContextSection = datasetContext ? `\n\nUser-Provided Dataset:\n${datasetContext}\n\n` : '';
+    const sparesDeskContext = sparesDeskResponse ? buildSparesDeskContext(query) : '';
+    const sparesDeskContextSection = sparesDeskContext
+      ? `\n\nAUTHORITATIVE KAVERI SPARES DATASET (query-scoped; use this instead of the demo context):\n${sparesDeskContext}\n\n`
+      : '';
+
     const prompt = `You are RiskPilot AI, an elite autonomous supplier risk intelligence and procurement decision agent.
 Analyze the user's question using the EXACT structured operational data and tools provided below.
 
@@ -1246,9 +1489,15 @@ RULES:
 9. Do not reveal private chain-of-thought. Provide only a concise, auditable rationale with supporting evidence and conclusions.
 10. Follow the workflow: Observe → Reason → Evaluate → Decide → Prepare action → Explain.
 11. Provide your response as a strict JSON object matching the requested schema.
+12. When an authoritative Kaveri Spares dataset is provided, use its stock snapshot date and sales period, do not mix in demo supplier facts, and distinguish calculated stock-cover estimates from forecasts.
+13. For non-trivial analysis, carefully verify joins, calculations, dates, units, exceptions, and alternatives before answering. Spend reasoning effort on accuracy, not verbosity; return only concise, auditable rationale, never hidden chain-of-thought.
+14. Use only evidence in the supplied context. If a requested conclusion cannot be computed from the available fields, identify the missing evidence instead of guessing.
 
 Context Data & Operational Tools:
 ${JSON.stringify(contextPayload, null, 2)}
+
+${datasetContextSection}
+${sparesDeskContextSection}
 
 ${conversationContext}Current User Question: "${query}"
 
@@ -1290,24 +1539,20 @@ Return JSON matching this TypeScript structure:
   }
 }`;
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('AI inference timeout after 25000ms')), 25000)
-    );
+    const text = openRouterKey
+      ? await requestOpenRouter(prompt, openRouterKey)
+      : await Promise.race([
+          ai!.models.generateContent({
+            model: 'gemini-3.7-flash',
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
+            }
+          }).then(response => response.text || ''),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AI inference timeout after 25000ms')), 25000))
+        ]);
 
-    const generatePromise = ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH
-        }
-      }
-    });
-
-    const response = await Promise.race([generatePromise, timeoutPromise]);
-
-    const text = response.text;
     if (text) {
       let clean = text.trim();
       if (clean.startsWith('```json')) {
@@ -1317,12 +1562,13 @@ Return JSON matching this TypeScript structure:
       }
       const parsed = JSON.parse(clean) as AIStructuredResponse;
       parsed.isDeterministicFallback = false;
-      parsed.executedOperations = [
-        finAudit.log,
-        stressSim.log,
-        benchmarkComp.log,
-        rootCauses.log,
-        splitOpt.log
+      parsed.analysisSource = openRouterKey ? 'openrouter' : 'gemini';
+      parsed.executedOperations = sparesDeskResponse ? [] : [
+        finAudit!.log,
+        stressSim!.log,
+        benchmarkComp!.log,
+        rootCauses!.log,
+        splitOpt!.log
       ];
       return parsed;
     }
@@ -1331,7 +1577,7 @@ Return JSON matching this TypeScript structure:
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
     console.info(`[AI Service] Using deterministic operations engine (${errorMsg})`);
-    const fallback = generateDeterministicAIAnalysis(
+    const fallback = sparesDeskResponse ?? generateDeterministicAIAnalysis(
       query,
       state,
       supplier,
@@ -1345,25 +1591,36 @@ Return JSON matching this TypeScript structure:
       splitParams,
       sensitivityParams
     );
-    let providerMessage = 'Gemini is unavailable; using limited deterministic procurement responses.';
+    let providerMessage = `${selectedProvider} is unavailable; using limited deterministic procurement responses.`;
     try {
       const errorBody = JSON.parse(errorMsg);
       const status = errorBody?.error?.code ?? err?.status;
       if (status === 429 || /quota|rate limit/i.test(errorBody?.error?.message ?? '')) {
-        providerMessage = 'Gemini API quota exceeded. Check the Google AI project quota or billing, then try again.';
+        providerMessage = `${selectedProvider} API quota or rate limit exceeded. Check the provider's quota, model access, or billing, then try again.`;
       } else if (status === 401 || status === 403) {
-        providerMessage = 'Gemini rejected the configured API key or its permissions. Check the key configuration.';
+        providerMessage = `${selectedProvider} rejected the configured API key or permissions. Check its environment configuration.`;
       } else if (status === 404) {
-        providerMessage = 'The configured Gemini model was not found. Check the model name in the AI service configuration.';
+        providerMessage = `The configured ${selectedProvider} model was not found or is unavailable to this account. Check the model setting and access.`;
+      } else if (/prompt tokens limit exceeded|context length|maximum context|too many tokens/i.test(errorBody?.error?.message ?? errorMsg)) {
+        providerMessage = `${selectedProvider} rejected an oversized prompt. I reduced spare-parts context to relevant data; if this continues, narrow the question or select a model with a larger context window.`;
       }
     } catch {
       if (err?.status === 429 || /quota|rate limit/i.test(errorMsg)) {
-        providerMessage = 'Gemini API quota exceeded. Check the Google AI project quota or billing, then try again.';
+        providerMessage = `${selectedProvider} API quota or rate limit exceeded. Check the provider's quota, model access, or billing, then try again.`;
       } else if (err?.status === 401 || err?.status === 403) {
-        providerMessage = 'Gemini rejected the configured API key or its permissions. Check the key configuration.';
+        providerMessage = `${selectedProvider} rejected the configured API key or permissions. Check its environment configuration.`;
+      } else if (/more credits|can only afford|fewer max_tokens|insufficient credits/i.test(errorMsg)) {
+        providerMessage = `${selectedProvider} reports insufficient account credits for this request. Add credits or choose a lower-cost model in OPENROUTER_MODEL.`;
+      } else if (/prompt tokens limit exceeded|context length|maximum context|too many tokens/i.test(errorMsg)) {
+        providerMessage = `${selectedProvider} rejected an oversized prompt. I reduced spare-parts context to relevant data; if this continues, narrow the question or select a model with a larger context window.`;
       }
     }
-    fallback.fallbackReason = providerMessage;
+    if (!openRouterKey && selectedProvider === 'Gemini') {
+      providerMessage += ' OpenRouter is not configured: add a rotated key as OPENROUTER_API_KEY to the server .env or hosting environment, then restart/redeploy.';
+    }
+    fallback.fallbackReason = sparesDeskResponse
+      ? `${providerMessage} The answer was calculated directly from the included spare-parts CSV dataset.`
+      : providerMessage;
     return fallback;
   }
 }

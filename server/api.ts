@@ -99,6 +99,7 @@ const aiAskSchema = z.object({
     role: z.enum(['user', 'assistant']),
     content: z.string()
   })).optional(),
+  datasetContext: z.string().optional(),
   stressParams: z.object({
     demandSurgePct: z.number().optional(),
     delayDays: z.number().optional()
@@ -122,7 +123,8 @@ apiRouter.post('/ai/ask', async (req: Request, res: Response) => {
       parsed.history,
       parsed.stressParams,
       parsed.splitParams,
-      parsed.sensitivityParams
+      parsed.sensitivityParams,
+      parsed.datasetContext
     );
     res.json(result);
   } catch (err: any) {
